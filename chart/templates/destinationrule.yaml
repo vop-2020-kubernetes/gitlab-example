@@ -1,0 +1,12 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: {{ template "trackableappname" . }}-dr
+spec:
+  host: {{ template "trackableappname" . }}-svc.{{ .Release.Namespace }}.svc.cluster.local
+  subsets:
+{{- range $name, $deployment := .Values.deployments }}
+  - name: {{ $name }}
+    labels:
+      deployment-type: {{ $name }}
+{{- end }}

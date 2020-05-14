@@ -1,0 +1,19 @@
+image: alpine:latest
+
+stages:
+  - build
+  - test
+  - review
+  - dast
+  - staging
+  - canary
+  - canary-rollout
+  - production
+  - performance
+  - cleanup
+
+include:
+  - local: .gitlab/Jobs/Build.gitlab-ci.yml
+  - local: .gitlab/Jobs/Test.gitlab-ci.yml
+  - local: .gitlab/Jobs/Code-Quality.gitlab-ci.yml
+  - local: .gitlab/Jobs/Deploy.gitlab-ci.yml

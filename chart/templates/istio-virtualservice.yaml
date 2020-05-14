@@ -1,0 +1,52 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ template "fullname" . }}
+spec:
+  hosts:
+  - {{ .Values.service.domain }}
+  gateways:
+  - {{ template "fullname" . }}-gateway
+  http:
+{{- if gt (len .Values.deployments)  1 }}
+{{- range $name, $deployment := .Values.deployments }}
+  - match:
+    - uri:
+        prefix: /
+      headers:
+        cookie:
+          regex: ^(.*?;\s)?(version={{ $name }})(;.*)?$
+    route:
+    - weight: {{ .weight }}
+      destination:
+        host: {{ template "trackableappname" $ }}-svc.{{ $.Release.Namespace }}.svc.cluster.local
+        subset: {{ $name }}
+        port:
+          number: {{ $.Values.service.externalPort }}
+{{- end }}
+  - match:
+    - uri:
+        exact: /
+    route:
+{{- range $name, $deployment := .Values.deployments }}
+    - weight: {{ .weight }}
+      destination:
+        host: {{ template "trackableappname" $ }}-svc.{{ $.Release.Namespace }}.svc.cluster.local
+        subset: {{ $name }}
+        port:
+          number: {{ $.Values.service.externalPort }}
+      headers:
+        response:
+          add:
+            Set-Cookie: version={{ $name }}
+{{- end }}
+{{- end }}
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: {{ template "trackableappname" $ }}-svc.{{ $.Release.Namespace }}.svc.cluster.local
+        subset: {{ .Values.defaultDeployment }}
+        port:
+          number: {{ $.Values.service.externalPort }}

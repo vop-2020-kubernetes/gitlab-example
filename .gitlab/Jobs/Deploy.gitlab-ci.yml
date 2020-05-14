@@ -1,0 +1,231 @@
+.auto-deploy:
+  image: "dtzar/helm-kubectl:latest"
+
+# .add-repo: &add-repo helm repo add ${AUTO_DEVOPS_CHART_REPOSITORY_NAME:-gitlab} ${AUTO_DEVOPS_CHART_REPOSITORY:-https://charts.gitlab.io} ${AUTO_DEVOPS_CHART_REPOSITORY_USERNAME:+"--username" "$AUTO_DEVOPS_CHART_REPOSITORY_USERNAME"} ${AUTO_DEVOPS_CHART_REPOSITORY_PASSWORD:+"--password" "$AUTO_DEVOPS_CHART_REPOSITORY_PASSWORD"}
+
+.create-namespace: &create-namespace |
+  kubectl create ns "$KUBE_NAMESPACE" || true
+  kubectl label namespace "$KUBE_NAMESPACE" istio-injection=enabled --overwrite
+
+.add-registry: &add-registry >-
+  kubectl create secret -n "$KUBE_NAMESPACE" docker-registry "gitlab-registry-${CI_PROJECT_PATH_SLUG}"
+  --docker-server="$CI_REGISTRY"
+  --docker-username="${CI_DEPLOY_USER:-$CI_REGISTRY_USER}"
+  --docker-password="${CI_DEPLOY_PASSWORD:-$CI_REGISTRY_PASSWORD}"
+  --docker-email="$GITLAB_USER_EMAIL"
+  -o yaml --dry-run | kubectl replace -n "$KUBE_NAMESPACE" --force -f -
+
+.variables: &variables |
+  if [[ -z "$CI_COMMIT_TAG" ]]; then
+    image_repository=${CI_APPLICATION_REPOSITORY:-$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG}
+    image_tag=${CI_APPLICATION_TAG:-$CI_COMMIT_SHA}
+  else
+    image_repository=${CI_APPLICATION_REPOSITORY:-$CI_REGISTRY_IMAGE}
+    image_tag=${CI_APPLICATION_TAG:-$CI_COMMIT_TAG}
+  fi
+  replicas=1
+
+.helm-upgrade: &helm-upgrade >-
+  helm upgrade "$NAME" chart/
+  --wait
+  --namespace="$KUBE_NAMESPACE"
+  --install
+  --set gitlab.app="$CI_PROJECT_PATH_SLUG"
+  --set gitlab.env="$CI_ENVIRONMENT_SLUG"
+  --set gitlab.envName="$CI_ENVIRONMENT_NAME"
+  --set gitlab.envURL="https://$DOMAIN"
+  --set application.track="stable"
+  --set application.secretName="$APPLICATION_SECRET_NAME"
+  --set application.secretChecksum="$APPLICATION_SECRET_CHECKSUM"
+  --set service.url="https://$DOMAIN"
+  --set service.domain="$DOMAIN"
+  --set defaultDeployment="main"
+  --set deployments.main.name="main"
+  --set deployments.main.replicaCount="$replicas"
+  --set deployments.main.weight="100"
+  --set deployments.main.image.repository="$image_repository"
+  --set deployments.main.image.tag="$image_tag"
+  --set deployments.main.image.secrets[0].name="gitlab-registry-${CI_PROJECT_PATH_SLUG}"
+  --set deployments.main.image.pullPolicy="IfNotPresent"
+  "${modsecurity_set_args[@]}"
+  "${helm_values_args[@]}"
+  $HELM_UPGRADE_EXTRA_ARGS
+
+.helm-canary: &helm-canary >-
+  helm upgrade "$NAME" chart/
+  --reuse-values
+  --wait
+  --namespace="$KUBE_NAMESPACE"
+  --set deployments.main.weight="$((100 - ROLLOUT_PERCENTAGE))"
+  --set deployments.canary.name="canary"
+  --set deployments.canary.replicaCount="$replicas"
+  --set deployments.canary.weight="$ROLLOUT_PERCENTAGE"
+  --set deployments.canary.image.repository="$image_repository"
+  --set deployments.canary.image.tag="$image_tag"
+  --set deployments.canary.image.secrets[0].name="gitlab-registry-${CI_PROJECT_PATH_SLUG}"
+  --set deployments.canary.image.pullPolicy="IfNotPresent"
+
+review:
+  extends: .auto-deploy
+  stage: review
+  script:
+    - |
+      export DOMAIN="$CI_PROJECT_ID-$CI_ENVIRONMENT_SLUG.$KUBE_INGRESS_BASE_DOMAIN"
+      export NAME="${CI_ENVIRONMENT_SLUG}-stable"
+      export KUBE_NAMESPACE="$KUBE_NAMESPACE_PREFIX-$NAME"
+    #- *add-repo
+    - *variables
+    - *create-namespace
+    - *add-registry
+    - *helm-upgrade
+    - echo $CI_ENVIRONMENT_URL > environment_url.txt
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: http://$CI_PROJECT_ID-$CI_ENVIRONMENT_SLUG.$KUBE_INGRESS_BASE_DOMAIN
+  artifacts:
+    paths: [environment_url.txt]
+  only:
+    refs:
+      - branches
+      - tags
+    kubernetes: active
+  except:
+    refs:
+      - master
+    variables:
+      - $REVIEW_DISABLED
+
+# Staging deploys are disabled by default since
+# continuous deployment to production is enabled by default
+# If you prefer to automatically deploy to staging and
+# only manually promote to production, enable this job by setting
+# STAGING_ENABLED.
+
+staging:
+  extends: .auto-deploy
+  stage: staging
+  script:
+    - |
+      export DOMAIN="$CI_PROJECT_PATH_SLUG-staging.$KUBE_INGRESS_BASE_DOMAIN"
+      export NAME="${CI_ENVIRONMENT_SLUG}-stable"
+      export KUBE_NAMESPACE="$KUBE_NAMESPACE_PREFIX-$NAME"
+    #- *add-repo
+    - *variables
+    - *create-namespace
+    - *add-registry
+    - *helm-upgrade
+    - echo $CI_ENVIRONMENT_URL > environment_url.txt
+  environment:
+    name: staging
+    url: http://$CI_PROJECT_PATH_SLUG-staging.$KUBE_INGRESS_BASE_DOMAIN
+  only:
+    refs:
+      - master
+    kubernetes: active
+    variables:
+      - $STAGING_ENABLED
+
+# Canaries are disabled by default, but if you want them,
+# and know what the downsides are, you can enable this by setting
+# CANARY_ENABLED.
+
+.canary: &canary_template
+  extends: .auto-deploy
+  script:
+    - |
+      export DOMAIN="$CI_PROJECT_PATH_SLUG.$KUBE_INGRESS_BASE_DOMAIN"
+      export NAME="${CI_ENVIRONMENT_SLUG}-stable"
+      export KUBE_NAMESPACE="$KUBE_NAMESPACE_PREFIX-$NAME"
+    - echo $ROLLOUT_WEIGHT
+    #- *add-repo
+    - *variables
+    - *create-namespace
+    - *add-registry
+    - *helm-canary
+    - echo $CI_ENVIRONMENT_URL > environment_url.txt
+  environment:
+    name: production
+    url: http://$DOMAIN
+  only:
+    refs:
+      - master
+    kubernetes: active
+    variables:
+      - $CANARY_ENABLED
+
+.production: &production_template
+  extends: .auto-deploy
+  stage: production
+  script:
+    - |
+      export DOMAIN="$CI_PROJECT_PATH_SLUG.$KUBE_INGRESS_BASE_DOMAIN"
+      export NAME="${CI_ENVIRONMENT_SLUG}-stable"
+      export KUBE_NAMESPACE="$KUBE_NAMESPACE_PREFIX-$NAME"
+    #- *add-repo
+    - *variables
+    - *create-namespace
+    - *add-registry
+    - *helm-upgrade
+    - echo $CI_ENVIRONMENT_URL > environment_url.txt
+  environment:
+    name: production
+    url: http://$CI_PROJECT_PATH_SLUG.$KUBE_INGRESS_BASE_DOMAIN
+  artifacts:
+    paths: [environment_url.txt]
+
+production:
+  <<: *production_template
+  only:
+    refs:
+      - master
+    kubernetes: active
+  except:
+    variables:
+      - $STAGING_ENABLED
+      - $CANARY_ENABLED
+
+production_manual:
+  <<: *production_template
+  when: manual
+  allow_failure: false
+  only:
+    refs:
+      - master
+    kubernetes: active
+    variables:
+      - $STAGING_ENABLED
+      - $CANARY_ENABLED
+
+canary:
+  <<: *canary_template
+  stage: canary
+  variables:
+    ROLLOUT_PERCENTAGE: 0
+
+rollout 10%:
+  <<: *canary_template
+  stage: canary-rollout
+  variables:
+    ROLLOUT_PERCENTAGE: 10
+  when: manual
+
+rollout 25%:
+  <<: *canary_template
+  stage: canary-rollout
+  variables:
+    ROLLOUT_PERCENTAGE: 25
+  when: manual
+
+rollout 50%:
+  <<: *canary_template
+  stage: canary-rollout
+  variables:
+    ROLLOUT_PERCENTAGE: 50
+  when: manual
+
+rollout 100%:
+  <<: *canary_template
+  stage: canary-rollout
+  variables:
+    ROLLOUT_PERCENTAGE: 100
+  when: manual

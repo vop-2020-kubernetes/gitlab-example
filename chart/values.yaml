@@ -1,0 +1,67 @@
+gitlab:
+  app:
+  env:
+  envName:
+  envURL:
+
+service:
+  name: product-page-svc
+  annotations: {}
+  name: http
+  url: http://my.host.com/
+  domain: my.host.com
+  externalPort: 5000
+  internalPort: 5000
+  ssl:
+    issuer: cloudflare-issuer
+
+defaultDeployment: main
+deployments: {}
+# production:
+#   replicaCount: 2
+#   weight: 100
+#   image:
+#     repository: gitlab.example.com/group/project
+#     tag: stable
+#     pullPolicy: IfNotPresent
+#     secrets:
+#       - name: gitlab-registry
+# canary:
+#   replicaCount: 0
+#   weight: 0
+#   image:
+#     repository: gitlab.example.com/group/project
+#     tag: canary
+#     pullPolicy: IfNotPresent
+#     secrets:
+#       - name: gitlab-registry
+
+application:
+  track: stable
+  tier: web
+  migrateCommand:
+  initializeCommand:
+  secretName:
+  secretChecksum:
+
+# livenessProbe:
+#   httpGet:
+#     path: /
+#     port: 5000
+#   initialDelaySeconds: 15
+#   periodSeconds: 15
+
+# readinessProbe:
+#   httpGet:
+#     path: /
+#     port: 5000
+#   initialDelaySeconds: 15
+#   periodSeconds: 15
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi

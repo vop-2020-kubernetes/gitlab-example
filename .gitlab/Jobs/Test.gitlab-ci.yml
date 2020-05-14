@@ -1,0 +1,12 @@
+test:
+  stage: test
+  image: gliderlabs/herokuish:latest
+  script:
+    - cp -R . /tmp/app
+    - /bin/herokuish buildpack test
+  only:
+    - branches
+    - tags
+  except:
+    variables:
+      - $TEST_DISABLED

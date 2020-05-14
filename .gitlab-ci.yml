@@ -1,0 +1,6 @@
+variables:
+  STAGING_ENABLED: "true"
+  CANARY_ENABLED: "true"
+  KUBE_NAMESPACE_PREFIX: "webapp"
+
+include: .gitlab/Main.gitlab-ci.yml
